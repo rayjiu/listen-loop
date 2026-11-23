@@ -1,0 +1,130 @@
+<!doctype html>
+<!--
+  Fake YouTube watch page for e2e tests. Served by test/e2e.py at
+  https://www.youtube.com/watch?v=... (via Playwright routing, never hits the network)
+  so the extension's content scripts inject exactly as on YouTube.
+
+  It mimics what the extension depends on:
+   - #movie_player with getPlayerResponse() and a <video class="html5-main-video">
+   - .ytp-subtitles-button; turning CC on makes the "player" request
+     /api/timedtext with a pot token, translated (tlang) like a real player might
+   - ytd-watch-flexy #secondary-inner for the panel
+   - document-level hotkeys (k / space / j / l / f / m / c / 0-9) like YouTube
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Harness Video - YouTube</title>
+<style>
+  body { margin: 0; font: 14px Roboto, Arial, sans-serif; background: #fff; }
+  ytd-watch-flexy { display: flex; gap: 24px; padding: 24px; }
+  #primary { flex: 1; }
+  #movie_player { position: relative; background: #000; aspect-ratio: 16/9; color: #fff; }
+  #movie_player video { width: 100%; height: 100%; }
+  .ytp-subtitles-button { position: absolute; right: 8px; bottom: 8px; }
+  #secondary { width: 402px; }
+  .related { height: 90px; background: #f2f2f2; border-radius: 8px; }
+  /* Like YouTube: page CSS resets margins of the right column's children (beats :host rules). */
+  #secondary-inner > * { margin: 0; }
+  #secondary-inner > .related + .related { margin-top: 8px; }
+  /* YouTube's dark theme: <html dark> */
+  html[dark] body { background: #0f0f0f; color: #f1f1f1; }
+  html[dark] .related { background: #272727; }
+  #hud { position: absolute; left: 8px; top: 8px; font: 12px monospace; }
+</style>
+</head>
+<body>
+<ytd-app>
+  <ytd-watch-flexy>
+    <div id="primary">
+      <div id="movie_player" class="html5-video-player">
+        <video class="html5-main-video"></video>
+        <div id="hud"></div>
+        <button class="ytp-subtitles-button ytp-button" aria-pressed="false">CC</button>
+      </div>
+      <h1>Harness: Steve Kerr postgame (audio is a synthetic tone)</h1>
+    </div>
+    <div id="secondary"><div id="secondary-inner">
+      <div class="related"></div><div class="related"></div><div class="related"></div>
+    </div></div>
+  </ytd-watch-flexy>
+</ytd-app>
+<script>
+(() => {
+  const VIDEO_ID = new URLSearchParams(location.search).get('v');
+  const player = document.getElementById('movie_player');
+  const video = player.querySelector('video');
+  const cc = player.querySelector('.ytp-subtitles-button');
+  window.__harness = { hotkeys: [], fullscreen: false, timedtext: [], translated: [], translatorCreated: 0 };
+  // Stand-in for Chrome's built-in Translator API: "downloads" a model with
+  // progress events on first use, then prefixes the text with 【译】.
+  window.Translator = {
+    availability: async () => 'downloadable',
+    create: async (o) => {
+      const m = new EventTarget();
+      if (o.monitor) o.monitor(m);
+      for (const loaded of [0, 0.4, 1]) {
+        await new Promise((r) => setTimeout(r, 250));
+        const ev = new Event('downloadprogress'); ev.loaded = loaded; m.dispatchEvent(ev);
+      }
+      window.__harness.translatorCreated++;
+      return { translate: async (text) => { window.__harness.translated.push(text); return '【译】' + text; } };
+    },
+  };
+
+  // 480 s of a quiet 220 Hz tone, 8 kHz 8-bit mono WAV, as a seekable blob.
+  const rate = 8000, secs = 480, n = rate * secs;
+  const buf = new ArrayBuffer(44 + n), dv = new DataView(buf);
+  const str = (o, s) => [...s].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+  str(36, 'data'); dv.setUint32(40, n, true);
+  const pcm = new Uint8Array(buf, 44);
+  for (let i = 0; i < n; i++) pcm[i] = 128 + Math.round(8 * Math.sin(2 * Math.PI * 220 * i / rate));
+  video.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  const t0 = parseFloat(new URLSearchParams(location.search).get('t')) || 0;
+  video.addEventListener('loadedmetadata', () => { video.currentTime = t0; video.play().catch(() => {}); }, { once: true });
+
+  const currentId = () => new URLSearchParams(location.search).get('v');
+  const base = () => `https://www.youtube.com/api/timedtext?v=${currentId()}&caps=asr&lang=en&kind=asr&signature=fake`;
+  // Reads the URL on every call so SPA-style navigation (pushState) is reflected.
+  // Video id NOCAPS00000 simulates a video without any captions.
+  player.getPlayerResponse = () => {
+    const vid = currentId();
+    return {
+      videoDetails: { videoId: vid },
+      captions: vid === 'NOCAPS00000' ? undefined : { playerCaptionsTracklistRenderer: { captionTracks: [
+        { baseUrl: base(), languageCode: 'en', kind: 'asr', name: { simpleText: 'English (auto-generated)' } },
+      ] } },
+    };
+  };
+
+  cc.addEventListener('click', () => {
+    const on = cc.getAttribute('aria-pressed') !== 'true';
+    cc.setAttribute('aria-pressed', String(on));
+    if (on) {
+      // A real player asks with its PO token, here in the viewer's translation language.
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `${base()}&pot=TOKEN123&fmt=json3&tlang=zh-Hans`);
+      xhr.send();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    window.__harness.hotkeys.push(k);
+    if (k === 'k' || k === ' ') { video.paused ? video.play() : video.pause(); }
+    else if (k === 'j') video.currentTime -= 10;
+    else if (k === 'l') video.currentTime += 10;
+    else if (k === 'm') video.muted = !video.muted;
+    else if (k === 'f') window.__harness.fullscreen = true;
+    else if (k === 'c') cc.click();
+    else if (/^[0-9]$/.test(k)) video.currentTime = video.duration * (+k / 10);
+  });
+
+  setInterval(() => { document.getElementById('hud').textContent = video.currentTime.toFixed(2) + (video.paused ? ' ⏸' : ' ▶') + ' ' + video.playbackRate + 'x'; }, 100);
+})();
+</script>
+</body>
+</html>

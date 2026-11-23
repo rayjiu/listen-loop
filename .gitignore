@@ -1,0 +1,15 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# test runs (python3 test/e2e.py <dir> — browser profiles, screenshots)
+e2e-out/
+__pycache__/
+*.pyc
+
+# packaging
+*.zip
+*.crx
+*.pem
+node_modules/
