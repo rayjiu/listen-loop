@@ -1,4 +1,11 @@
 {
-  "extName": { "message": "Listen Loop — YouTube 精听听写" },
-  "extDesc": { "message": "把 YouTube 视频按句切开，逐句循环播放、听写并逐词核对。" }
+  "extName": {
+    "message": "Listen Loop — YouTube 精听听写"
+  },
+  "extDesc": {
+    "message": "把 YouTube 视频按句切开，逐句循环播放、听写并逐词核对。"
+  },
+  "actionTitle": {
+    "message": "打开 Listen Loop 错题本"
+  }
 }

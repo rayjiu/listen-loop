@@ -213,3 +213,91 @@ test('i18n: Chinese browsers get Chinese, everyone else English', () => {
     if (saved) Object.defineProperty(globalThis, 'navigator', saved);
   }
 });
+
+// ---- mistake notebook (错题本) --------------------------------------------
+const NB = require('../src/notebook.js');
+const at = (y, m, d, h = 12) => new Date(y, m - 1, d, h).getTime(); // local time
+const sample = (over) => NB.newItem(Object.assign({
+  videoId: 'bghlEqTApEQ', key: '30160', title: 'Kerr', start: 30.16, end: 32.48, a: 30.08, b: 32.48,
+  text: 'So we stay in touch and I love hearing from him.', answer: 'so we stay in touch', missed: ['hearing'],
+}, over), at(2026, 11, 24, 21));
+
+test('notebook: new item is due the next calendar day', () => {
+  const it = sample();
+  assert.equal(it.id, 'bghlEqTApEQ:30160');
+  assert.equal(NB.isDue(it, at(2026, 11, 24, 23)), false);
+  assert.equal(NB.isDue(it, at(2026, 11, 25, 0)), true); // just after midnight
+  assert.equal(NB.isDue(it, at(2026, 12, 3)), true); // overdue stays due
+});
+
+test('notebook: good walks 1 -> 3 -> 7 -> 15 -> 30 days, then mastered', () => {
+  let it = sample();
+  let day = at(2026, 11, 25);
+  const gaps = [];
+  for (let k = 0; k < 4; k++) {
+    it = NB.applyGrade(it, 'good', day);
+    gaps.push(it.due - NB.dayIndex(day));
+    day += gaps[gaps.length - 1] * 86400000;
+  }
+  assert.deepEqual(gaps, [3, 7, 15, 30]);
+  assert.equal(it.mastered, false);
+  it = NB.applyGrade(it, 'good', day); // passed the 30-day review
+  assert.equal(it.mastered, true);
+  assert.equal(it.due, null);
+  assert.equal(NB.isDue(it, day + 400 * 86400000), false);
+  assert.equal(it.reviews.length, 5);
+});
+
+test('notebook: fuzzy stays and returns within two days, again restarts tomorrow', () => {
+  const d = at(2026, 12, 1);
+  let it = NB.applyGrade(NB.applyGrade(sample(), 'good', d), 'good', d); // stage 2 (7 days)
+  const f = NB.applyGrade(it, 'fuzzy', d);
+  assert.equal(f.stage, 2);
+  assert.equal(f.due - NB.dayIndex(d), 2);
+  assert.equal(NB.applyGrade(sample(), 'fuzzy', d).due - NB.dayIndex(d), 1); // stage 0: interval is 1 day
+  const a = NB.applyGrade(it, 'again', d);
+  assert.equal(a.stage, 0);
+  assert.equal(a.due - NB.dayIndex(d), 1);
+  // a mastered item that is forgotten comes back
+  const m = Object.assign({}, it, { mastered: true, stage: 5, due: null });
+  assert.equal(NB.applyGrade(m, 'again', d).mastered, false);
+  assert.equal(NB.applyGrade(m, 'good', d).mastered, true);
+});
+
+test('notebook: auto grade from the first check', () => {
+  assert.equal(NB.autoGrade({ perfect: true, score: 1, helped: false, revealed: false }), 'good');
+  assert.equal(NB.autoGrade({ perfect: true, score: 1, helped: true, revealed: false }), 'fuzzy');
+  assert.equal(NB.autoGrade({ perfect: false, score: 0.85, helped: false, revealed: false }), 'fuzzy');
+  assert.equal(NB.autoGrade({ perfect: false, score: 0.5, helped: false, revealed: false }), 'again');
+  assert.equal(NB.autoGrade({ perfect: true, score: 1, helped: false, revealed: true }), 'again');
+});
+
+test('notebook: review queue groups by video, most overdue video first, time order inside', () => {
+  const now = at(2026, 12, 10);
+  const mk = (videoId, key, start, due) => Object.assign(sample({ videoId, key, start, end: start + 2 }), { due });
+  const today = NB.dayIndex(now);
+  const items = {};
+  for (const it of [
+    mk('videoAAAAAAA', '50000', 50, today), mk('videoAAAAAAA', '10000', 10, today - 1),
+    mk('videoBBBBBBB', '90000', 90, today - 3), mk('videoBBBBBBB', '20000', 20, today),
+    mk('videoCCCCCCC', '5000', 5, today + 1), // not due yet
+  ]) items[it.id] = it;
+  items['videoAAAAAAA:70000'] = Object.assign(mk('videoAAAAAAA', '70000', 70, today), { gone: true });
+  assert.deepEqual(NB.buildQueue(items, now), ['videoBBBBBBB:20000', 'videoBBBBBBB:90000', 'videoAAAAAAA:10000', 'videoAAAAAAA:50000']);
+  assert.deepEqual(NB.stats(items, now), { total: 6, due: 4, mastered: 0, gone: 1 });
+});
+
+test('notebook: backup round trip keeps the more recently reviewed copy', () => {
+  const a = sample();
+  const items = { [a.id]: a };
+  const backup = JSON.parse(JSON.stringify(NB.exportData(items, Date.now())));
+  const newer = Object.assign({}, backup.items[0], { stage: 3, lastReview: a.added + 1000 });
+  const other = Object.assign({}, backup.items[0], { key: '99000', start: 99, end: 101 });
+  const bad = { videoId: 'x', key: 1 };
+  const res = NB.mergeImport(items, { items: [newer, other, bad] });
+  assert.deepEqual(res, { ok: true, added: 1, updated: 1, skipped: 1 });
+  assert.equal(items[a.id].stage, 3);
+  assert.ok(items['bghlEqTApEQ:99000']);
+  assert.equal(NB.mergeImport(items, { nope: 1 }).ok, false);
+  assert.deepEqual(NB.missedIndex(items)[0], ['hearing', [a.id, 'bghlEqTApEQ:99000']]);
+});

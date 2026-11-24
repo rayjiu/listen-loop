@@ -32,10 +32,22 @@
         "src/check.js",
         "src/panel-style.js",
         "src/i18n.js",
+        "src/notebook.js",
         "src/content.js"
       ],
       "run_at": "document_idle"
     }
   ],
-  "default_locale": "en"
+  "default_locale": "en",
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_title": "__MSG_actionTitle__",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
 }

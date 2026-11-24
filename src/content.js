@@ -11,6 +11,7 @@
   const { buildPieces, assemble } = window.LLSegment;
   const { checkAnswer, hintText } = window.LLCheck;
   const I18N = window.LLI18n;
+  const NB = window.LLNotebook;
 
   const HOOK = 'listen-loop-hook';
   const CS = 'listen-loop-cs';
@@ -45,6 +46,8 @@
   let selfPlayUntil = 0;
   let selfPauseUntil = 0;
   let rafId = 0;
+  let nbItems = {}; // the mistake notebook (all videos), mirrored from storage
+  let session = null; // active review session { queue, pos, results }, mirrored from storage
   let host = null;
   let root = null;
   const el = {};
@@ -57,6 +60,11 @@
       trans: false, // translation box open for the current sentence
       transCache: {}, // `${lang}|${text}` -> translation, saved per video
       transJob: null, // { key, status: 'loading'|'error', progress, error }
+      mode: 'practice', // or 'review' (mistake notebook review: sentences come from saved items)
+      review: null, // { ids, qpos }: this video's items and their positions in the session queue
+      helped: false, // hint or translation opened for the current sentence
+      rv: null, // review grade of the current item { before, auto, grade }
+      summary: null, // counts shown when a review session ends
     };
   }
   /** The learner's segmentation fixes for one video (see LLSegment.assemble). */
@@ -96,7 +104,7 @@
   function saveVideo() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      if (!S.videoId || S.phase !== 'ready') return;
+      if (!S.videoId || S.phase !== 'ready' || S.mode === 'review') return;
       sset('ll:video:' + S.videoId, {
         idx: S.idx, progress: S.progress, edits: S.edits, n: S.sentences.length,
         title: document.title.replace(/ - YouTube$/, ''), updated: Date.now(),
@@ -175,6 +183,7 @@
   function playBounds(i) {
     const ss = S.sentences;
     const s = ss[i];
+    if (s.range) return s.range; // review item: the range saved with it
     const prev = ss[i - 1];
     const next = ss[i + 1];
     const minLead = s.estStart && s.start === s.start0 ? EST_LEAD : JOINT_LEAD; // learner-set starts are exact
@@ -265,7 +274,7 @@
 
   /** While the video plays normally, follow along so Tab replays "this" sentence. */
   function syncToTime(t) {
-    if (!el.input || el.input.value || S.result || S.hint || S.revealed) return;
+    if (S.mode === 'review' || !el.input || el.input.value || S.result || S.hint || S.revealed) return;
     const i = indexAt(t);
     if (i === S.idx) return;
     const prev = S.idx;
@@ -287,6 +296,8 @@
     S.revealed = false;
     S.result = null;
     S.checkedText = null;
+    S.helped = false;
+    S.rv = null;
     el.input.value = '';
     updateListItem(prev);
     updateListItem(i);
@@ -304,7 +315,7 @@
     const v = getVideo();
     // Just heard something while watching normally? If the current sentence only
     // started a moment ago, the learner almost certainly means the previous one.
-    if (!loop && v && !v.paused && S.idx > 0 && !el.input.value && !S.result) {
+    if (S.mode !== 'review' && !loop && v && !v.paused && S.idx > 0 && !el.input.value && !S.result) {
       const s = S.sentences[S.idx];
       if (v.currentTime - s.start < 0.8) { goTo(S.idx - 1, true); return; }
     }
@@ -330,6 +341,7 @@
   function toggleHint() {
     if (S.phase !== 'ready') return;
     S.hint = !S.hint;
+    if (S.hint) S.helped = true;
     renderPractice();
   }
 
@@ -369,6 +381,7 @@
     const key = transKey(s);
     const failed = S.transJob && S.transJob.key === key && S.transJob.status === 'error';
     S.trans = failed ? true : !S.trans; // after a failure, pressing again retries
+    if (S.trans) S.helped = true;
     renderTrans();
     if (S.trans && S.transCache[key] === undefined) translateSentence(key);
   }
@@ -422,7 +435,7 @@
   function reveal() {
     if (S.phase !== 'ready') return;
     S.revealed = !S.revealed;
-    if (S.revealed) {
+    if (S.revealed && S.mode !== 'review') {
       const s = S.sentences[S.idx];
       const p = S.progress[s.key] || newProgress();
       p.revealed = true;
@@ -443,6 +456,12 @@
     const r = checkAnswer(s.text, text, { ignoreFillers: settings.ignoreFillers });
     S.result = r;
     S.checkedText = el.input.value;
+    if (S.mode === 'review') {
+      // The first check decides the grade; later checks are just for learning.
+      if (!S.rv) commitGrade(NB.autoGrade({ perfect: r.perfect, score: r.score, helped: S.helped, revealed: S.revealed }));
+      renderPractice();
+      return;
+    }
     const p = S.progress[s.key] || newProgress();
     if (p.attempts === 0 && !p.revealed) recordMissed(r.missed);
     p.attempts++;
@@ -458,8 +477,209 @@
   }
 
   function enterAction() {
-    if (S.result && S.checkedText === el.input.value) goTo(S.idx + 1, true);
-    else doCheck();
+    if (S.result && S.checkedText === el.input.value) {
+      if (S.mode === 'review') nextReview();
+      else goTo(S.idx + 1, true);
+    } else doCheck();
+  }
+
+  function next() {
+    if (S.mode === 'review') nextReview();
+    else goTo(S.idx + 1, true);
+  }
+
+  // ------------------------------------------------------ mistake notebook
+  // The learner adds sentences by hand (☆ / Alt+B). Each item keeps the video,
+  // the played time range, the text and their answer, so it can be reviewed later
+  // straight from the video without fetching captions again (see notebook.js).
+  const videoTitle = () => document.title.replace(/^\(\d+\)\s*/, '').replace(/ - YouTube$/, '');
+  const curItemId = () => {
+    const s = S.sentences[S.idx];
+    return s ? (S.mode === 'review' ? s.id : NB.itemId(S.videoId, s.key)) : null;
+  };
+  const inNotebook = () => !!nbItems[curItemId()];
+
+  async function toggleNotebook() {
+    if (S.phase !== 'ready') return;
+    const s = S.sentences[S.idx];
+    const id = curItemId();
+    if (nbItems[id]) {
+      delete nbItems[id];
+      await NB.store.update((items) => { delete items[id]; });
+      toast(t('nbRemoved'));
+    } else {
+      let it;
+      if (S.mode === 'review') it = (S.rv && S.rv.before) || s.item; // put back what was removed
+      else {
+        const b = playBounds(S.idx);
+        it = NB.newItem({
+          videoId: S.videoId, title: videoTitle(), key: s.key, start: s.start, end: s.end, a: b.a, b: b.b, text: s.text,
+          answer: (S.checkedText != null ? S.checkedText : el.input.value).trim(), missed: S.result ? S.result.missed : [],
+        }, Date.now());
+      }
+      nbItems[id] = it;
+      await NB.store.update((items) => { items[id] = it; });
+      toast(t('nbAdded'));
+    }
+    renderNb();
+  }
+
+  /** Keep saved items in step when the learner re-cuts sentences of this video. */
+  function syncNotebook() {
+    if (S.mode === 'review' || !S.videoId) return;
+    const changed = [];
+    S.sentences.forEach((s, i) => {
+      const id = NB.itemId(S.videoId, s.key);
+      const it = nbItems[id];
+      if (!it) return;
+      const b = playBounds(i);
+      const f = { start: s.start, end: s.end, text: s.text, a: b.a, b: b.b };
+      if (Object.keys(f).some((k) => it[k] !== f[k])) { Object.assign(it, f); changed.push([id, f]); }
+    });
+    if (changed.length) NB.store.update((items) => { for (const [id, f] of changed) if (items[id]) Object.assign(items[id], f); });
+  }
+
+  function openNotebook() {
+    try { chrome.runtime.sendMessage({ type: 'open-notebook' }); } catch (_) { /* extension reloaded */ }
+  }
+
+  // ---------------------------------------------------------------- review
+  const saveSession = () => NB.store.setSession(session);
+  /** First still-existing item at or after session.pos. */
+  function reviewHead() {
+    if (!session) return null;
+    let p = session.pos;
+    while (p < session.queue.length && !nbItems[session.queue[p]]) p++;
+    return p < session.queue.length ? { pos: p, item: nbItems[session.queue[p]] } : null;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** The video element once playable, 'error' if YouTube says it can't play, null on timeout. */
+  async function waitForVideo(vid) {
+    for (let k = 0; k < 75; k++) {
+      if (currentVideoId() !== vid) return null;
+      const err = document.querySelector('#movie_player .ytp-error');
+      if (err && err.offsetParent !== null) return 'error';
+      const v = getVideo();
+      if (v && v.readyState >= 1) return v;
+      await sleep(200);
+    }
+    return null;
+  }
+
+  async function enterReview(vid) {
+    const head = reviewHead();
+    if (!head || head.item.videoId !== vid) return;
+    const ids = [];
+    const qpos = [];
+    for (let p = head.pos; p < session.queue.length; p++) {
+      const it = nbItems[session.queue[p]];
+      if (!it) continue;
+      if (it.videoId !== vid) break;
+      ids.push(it.id);
+      qpos.push(p);
+    }
+    stopLoop();
+    S = freshState(vid);
+    S.mode = 'review';
+    S.review = { ids, qpos };
+    S.sentences = ids.map((id, i) => {
+      const it = nbItems[id];
+      return {
+        id, item: it, i, key: it.key, start: it.start, end: it.end, start0: it.start, end0: it.end, text: it.text,
+        title: it.title, words: it.text.split(/\s+/).filter(Boolean).map((w) => ({ w })), parts: [it.key],
+        range: { a: it.a, b: it.b },
+      };
+    });
+    S.phase = 'ready';
+    if (el.input) el.input.value = '';
+    renderAll();
+    applyMask();
+    const v = await waitForVideo(vid);
+    if (S.mode !== 'review' || S.videoId !== vid) return;
+    if (v === 'error') { // deleted / private video: mark its items and move on
+      await NB.store.update((items) => { for (const id of ids) if (items[id]) items[id].gone = true; });
+      toast(t('rvGone'));
+      session.pos = qpos[qpos.length - 1] + 1;
+      setTimeout(() => advanceSession(), 1500);
+      return;
+    }
+    if (!v) { toast(t('rvLoadFail')); return; }
+    attachVideo(v);
+    hideYouTubeCC();
+    session.pos = qpos[0];
+    saveSession();
+    goTo(0, true);
+  }
+
+  /** Record a grade for the current review item; later calls override it. */
+  function commitGrade(g) {
+    const s = S.sentences[S.idx];
+    if (!s || !session) return;
+    if (!S.rv) {
+      const before = nbItems[s.id];
+      if (!before) return; // removed meanwhile
+      S.rv = { before, auto: g, grade: g };
+    } else S.rv.grade = g;
+    const updated = NB.applyGrade(S.rv.before, g, Date.now());
+    nbItems[s.id] = updated;
+    NB.store.update((items) => { if (items[s.id]) items[s.id] = updated; });
+    session.results[s.id] = g;
+    saveSession();
+    renderResult();
+  }
+
+  function nextReview() {
+    if (S.mode !== 'review' || !session) return;
+    if (!S.rv && S.revealed && nbItems[curItemId()]) commitGrade('again'); // looked at the answer, never checked
+    if (S.idx + 1 < S.sentences.length) {
+      session.pos = S.review.qpos[S.idx + 1];
+      saveSession();
+      goTo(S.idx + 1, true);
+      return;
+    }
+    session.pos = S.review.qpos[S.idx] + 1;
+    advanceSession();
+  }
+
+  /** Go to the video of the next item, or finish. */
+  async function advanceSession() {
+    const head = reviewHead();
+    if (!head) { finishReview(); return; }
+    session.pos = head.pos;
+    await saveSession();
+    if (head.item.videoId === S.videoId) enterReview(S.videoId);
+    else location.href = NB.watchUrl(head.item);
+  }
+
+  function finishReview() {
+    const counts = { good: 0, fuzzy: 0, again: 0 };
+    for (const g of Object.values((session && session.results) || {})) if (counts[g] != null) counts[g]++;
+    session = null;
+    NB.store.setSession(null);
+    stopLoop();
+    const vid = S.videoId;
+    S = freshState(vid);
+    S.phase = 'review-done';
+    S.summary = counts;
+    renderAll();
+  }
+
+  function exitReview() {
+    session = null;
+    NB.store.setSession(null);
+    stopLoop();
+    S = freshState(S.videoId);
+    if (el.input) el.input.value = '';
+    renderAll();
+    applyMask();
+  }
+
+  function resumeReview() {
+    const head = reviewHead();
+    if (!head) { exitReview(); return; }
+    if (head.item.videoId === S.videoId) enterReview(S.videoId);
+    else location.href = NB.watchUrl(head.item);
   }
 
   function toggleFlag() {
@@ -504,6 +724,7 @@
     let i = S.sentences.findIndex((s) => s.key === key);
     if (i < 0) i = Math.min(S.idx, S.sentences.length - 1);
     S.idx = i;
+    syncNotebook();
     buildList();
     scrollListTo(i);
     renderHeader();
@@ -632,6 +853,7 @@
     else if (saved && Number.isInteger(saved.idx) && saved.idx < S.sentences.length) S.idx = saved.idx;
     else S.idx = indexAt(v ? v.currentTime : 0);
     S.phase = 'ready';
+    syncNotebook();
     el.panel.dataset.via = res.via || ''; // which caption path worked (debug aid)
     hideYouTubeCC();
     attachVideo(v);
@@ -647,13 +869,25 @@
     <div class="hdr">
       <div class="brand"><span class="dot"></span>Listen Loop</div>
       <div class="hdr-info"></div>
+      <button class="nb-open" data-act="open-nb" title="${t('nbOpenTitle')}">${t('nbName')}<b class="badge" hidden></b></button>
       <button class="ib" data-act="toggle-settings" title="${t('settings')}">⚙︎</button>
       <button class="ib" data-act="collapse" title="${t('collapse')}">▾</button>
     </div>
     <div class="body">
       <div class="view view-idle">
+        <div class="resume" hidden><span class="resume-tx"></span><span class="grow"></span>
+          <button class="btn sm primary" data-act="review-resume">${t('rvContinue')}</button>
+          <button class="link" data-act="review-exit">${t('rvExit')}</button></div>
         <p class="lead">${t('lead')}</p>
         <button class="btn primary wide" data-act="start">${t('start')}</button>
+      </div>
+      <div class="view view-review-done">
+        <p class="done-title">${t('rvDoneTitle')}</p>
+        <p class="done-sum"></p>
+        <div class="done-actions">
+          <button class="btn primary" data-act="open-nb">${t('rvBackToNb')}</button>
+          <button class="btn" data-act="review-stay">${t('rvStay')}</button>
+        </div>
       </div>
       <div class="view view-loading"><span class="spinner"></span>${t('loading')}</div>
       <div class="view view-error">
@@ -661,6 +895,8 @@
         <button class="btn sm" data-act="start">${t('retry')}</button>
       </div>
       <div class="view view-ready">
+        <div class="rv-bar"><span class="rv-src"></span><span class="grow"></span>
+          <button class="link" data-act="review-exit">${t('rvExit')}</button></div>
         <div class="meta"><span class="sent-no"></span><span class="sent-time"></span>
           <button class="link adj-toggle" data-act="toggle-adjust" title="${t('adjToggleTitle')}">${t('adjToggle')}</button>
           <span class="loop-status"></span></div>
@@ -699,6 +935,7 @@
           <button class="btn sm" data-act="trans" title="Alt+T">${t('trans')}</button>
           <button class="btn sm" data-act="reveal" title="Alt+A">${t('reveal')}</button>
           <span class="grow"></span>
+          <button class="ib nb-star" data-act="nb" title="${t('nbAddTitle')}">☆</button>
           <button class="btn primary sm" data-act="check">${t('check')}</button>
         </div>
         <div class="toast"></div>
@@ -750,6 +987,8 @@
       rate: q('select[data-set="rate"]'), loops: q('select[data-set="loops"]'), gap: q('select[data-set="gap"]'),
       adjust: q('.adjust'), adjToggle: q('.adj-toggle'), adjStart: q('.adj-start'), adjEnd: q('.adj-end'),
       joinBtn: q('[data-act="join-next"]'), splitBtn: q('[data-act="split"]'), adjReset: q('[data-act="adj-reset"]'),
+      nbBadge: q('.nb-open .badge'), nbStar: q('.nb-star'), resume: q('.resume'), resumeTx: q('.resume-tx'),
+      rvSrc: q('.rv-src'), doneSum: q('.done-sum'),
     });
     el.rate.innerHTML = RATES.map((r) => `<option value="${r}">${r}x</option>`).join('');
     el.loops.innerHTML = LOOPS.map((n) => `<option value="${n}">${n === 0 ? '∞' : n}</option>`).join('');
@@ -812,7 +1051,11 @@
     if (!root) return;
     el.panel.dataset.phase = S.phase;
     el.panel.classList.toggle('collapsed', !!settings.collapsed);
+    el.panel.classList.toggle('review', S.mode === 'review');
     el.err.textContent = errorText();
+    renderResume();
+    if (S.summary) el.doneSum.textContent = t('rvDoneSum', S.summary);
+    renderNbBadge();
     renderHeader();
     renderSettings();
     if (S.phase === 'ready') renderPractice();
@@ -821,7 +1064,8 @@
   function renderHeader() {
     if (!el.hdrInfo) return;
     let txt = '';
-    if (S.phase === 'ready') {
+    if (S.phase === 'ready' && S.mode === 'review') txt = t('rvHdr');
+    else if (S.phase === 'ready') {
       const done = S.sentences.reduce((n, s) => {
         const p = S.progress[s.key];
         return n + (p && (p.correct || p.flagged) ? 1 : 0);
@@ -834,7 +1078,12 @@
   function renderPractice() {
     const s = S.sentences[S.idx];
     if (!s || !el.sentNo) return;
-    el.sentNo.textContent = t('sentNo', { i: S.idx + 1, n: S.sentences.length });
+    if (S.mode === 'review') {
+      const n = session ? session.queue.length : S.sentences.length;
+      el.sentNo.textContent = t('rvItem', { k: (S.review.qpos[S.idx] || 0) + 1, n });
+      el.rvSrc.textContent = t('rvFrom', { title: s.title || S.videoId });
+      el.rvSrc.title = s.title || '';
+    } else el.sentNo.textContent = t('sentNo', { i: S.idx + 1, n: S.sentences.length });
     el.sentTime.textContent = `${fmt(s.start, true)} – ${fmt(s.end, true)}`;
     el.rate.value = String(settings.rate);
     el.loops.value = String(settings.loops);
@@ -843,8 +1092,37 @@
     renderTrans();
     el.summary.textContent = t('summary', { n: S.sentences.length, kind: t(S.info && S.info.isAuto ? 'autoCaps' : 'manualCaps') });
     renderAdjust();
+    renderNbState();
     renderResult();
     renderStatus();
+  }
+
+  function renderNbBadge() {
+    if (!el.nbBadge) return;
+    const due = NB.stats(nbItems, Date.now()).due;
+    el.nbBadge.textContent = due ? String(due) : '';
+    el.nbBadge.hidden = !due;
+  }
+  function renderNbState() {
+    if (!el.nbStar) return;
+    const on = inNotebook();
+    el.nbStar.textContent = on ? '★' : '☆';
+    el.nbStar.classList.toggle('on', on);
+    el.nbStar.title = t(on ? 'nbRemoveTitle' : 'nbAddTitle');
+  }
+  /** Notebook changed (here or in another tab). */
+  function renderNb() {
+    renderNbBadge();
+    if (S.phase !== 'ready') return;
+    renderNbState();
+    renderResult();
+    if (S.mode !== 'review') S.sentences.forEach((_, i) => updateListItem(i));
+  }
+  function renderResume() {
+    if (!el.resume) return;
+    const head = S.phase === 'idle' ? reviewHead() : null;
+    el.resume.hidden = !head;
+    if (head) el.resumeTx.textContent = t('rvResume', { k: head.pos + 1, n: session.queue.length });
   }
 
   function renderAdjust() {
@@ -900,8 +1178,27 @@
       head = `<div class="score"><b>${t('answer')}</b></div>`;
       body = `<div class="words">${esc(s.text)}</div>`;
     }
+    const nbLink = `<button class="link nb-link${inNotebook() ? ' on' : ''}" data-act="nb">${t(inNotebook() ? 'nbInLink' : 'nbAddLink')}</button>`;
+    if (S.mode === 'review') {
+      el.result.innerHTML = head + body + renderGrade() + `<div class="res-foot">${nbLink}</div>`;
+      return;
+    }
     const flag = `<button class="link" data-act="flag">${t(p.flagged ? 'flagOn' : 'flagOff')}</button>`;
-    el.result.innerHTML = head + body + `<div class="res-foot">${flag}</div>`;
+    el.result.innerHTML = head + body + `<div class="res-foot">${nbLink}<span class="grow"></span>${flag}</div>`;
+  }
+
+  /** Review: the grade buttons (auto-picked, changeable) and when the item comes back. */
+  function renderGrade() {
+    if (!S.rv) return '';
+    const it = nbItems[S.sentences[S.idx].id];
+    let when = '';
+    if (it) {
+      const d = NB.daysUntil(it, Date.now());
+      when = it.mastered ? t('nbMastered') : d <= 0 ? t('nbToday') : d === 1 ? t('nbTomorrow') : t('nbInDays', { n: d });
+    }
+    const btn = (g, k) => `<button class="gbtn ${g}${S.rv.grade === g ? ' on' : ''}" data-act="grade" data-g="${g}">${t(k)}</button>`;
+    return `<div class="grade"><span class="glbl">${t('gradeLbl')}</span>${btn('again', 'gAgain')}${btn('fuzzy', 'gFuzzy')}${btn('good', 'gGood')}</div>` +
+      `<div class="gnext">${esc(t('rvNext', { when }))}</div>`;
   }
 
   function renderDiff(r) {
@@ -943,7 +1240,8 @@
       tx.textContent = `${'•'.repeat(Math.min(22, Math.max(3, Math.round(s.text.length / 5))))}  ${t('nWords', { n: s.words.length })}`;
       tx.classList.add('masked');
     }
-    li.querySelector('.st').textContent = p && p.flagged ? '⚑' : p && p.correct ? '✓' : p && p.attempts ? `${Math.round(p.best * 100)}%` : '';
+    const star = nbItems[NB.itemId(S.videoId, s.key)] ? '★ ' : '';
+    li.querySelector('.st').textContent = star + (p && p.flagged ? '⚑' : p && p.correct ? '✓' : p && p.attempts ? `${Math.round(p.best * 100)}%` : '');
   }
 
   function scrollListTo(i) {
@@ -1012,12 +1310,18 @@
         break;
       case 'replay': replay(); break;
       case 'prev': goTo(S.idx - 1, true); break;
-      case 'next': goTo(S.idx + 1, true); break;
+      case 'next': next(); break;
       case 'hint': toggleHint(); break;
       case 'trans': toggleTrans(); el.input.focus({ preventScroll: true }); break;
       case 'reveal': reveal(); break;
       case 'check': doCheck(); el.input.focus({ preventScroll: true }); break;
       case 'flag': toggleFlag(); break;
+      case 'nb': toggleNotebook(); break;
+      case 'open-nb': openNotebook(); break;
+      case 'grade': commitGrade(btn.dataset.g); el.input.focus({ preventScroll: true }); break;
+      case 'review-exit': exitReview(); break;
+      case 'review-resume': resumeReview(); break;
+      case 'review-stay': S = freshState(S.videoId); renderAll(); break;
       case 'toggle-adjust': S.adjOpen = !S.adjOpen; renderAdjust(); break;
       case 'adj': nudge(+btn.dataset.w, +btn.dataset.d); break;
       case 'join-next': joinNext(); break;
@@ -1071,14 +1375,15 @@
       if (!inPanel && isEditable(path[0])) return; // YouTube search box, comments…
       let handled = true;
       switch (e.code) {
-        case 'ArrowLeft': goTo(S.idx - 1, true); break;
-        case 'ArrowRight': goTo(S.idx + 1, true); break;
+        case 'ArrowLeft': if (S.mode !== 'review') goTo(S.idx - 1, true); break;
+        case 'ArrowRight': next(); break;
         case 'ArrowUp': bumpRate(+1); break;
         case 'ArrowDown': bumpRate(-1); break;
         case 'KeyR': replay(); break;
         case 'KeyH': toggleHint(); break;
         case 'KeyT': toggleTrans(); break;
         case 'KeyA': reveal(); break;
+        case 'KeyB': toggleNotebook(); break;
         default: handled = false;
       }
       if (handled) { e.preventDefault(); e.stopImmediatePropagation(); }
@@ -1107,6 +1412,8 @@
       if (el.items) el.items.innerHTML = '';
       renderAll();
       applyMask();
+      const head = reviewHead();
+      if (head && head.item.videoId === vid) { enterReview(vid); return; } // continuing a notebook review
       if (settings.autoStart) start(false);
     }
   }
@@ -1114,6 +1421,16 @@
   async function init() {
     settings = { ...DEFAULTS, ...(await sget('ll:settings', {})) };
     lang = resolveLang();
+    nbItems = await NB.store.load();
+    session = await NB.store.session();
+    try {
+      chrome.storage.onChanged.addListener((ch, area) => {
+        if (area !== 'local') return;
+        if (ch[NB.KEY]) { nbItems = (ch[NB.KEY].newValue && ch[NB.KEY].newValue.items) || {}; renderNb(); }
+        // A review running in this tab owns the session; take other tabs' changes otherwise.
+        if (ch[NB.REVIEW_KEY] && S.mode !== 'review') { session = ch[NB.REVIEW_KEY].newValue || null; renderResume(); }
+      });
+    } catch (_) { /* extension reloaded */ }
     new MutationObserver(syncTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['dark'] });
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('keyup', swallowInPanel, true);

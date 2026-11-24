@@ -1,4 +1,11 @@
 {
-  "extName": { "message": "Listen Loop — YouTube dictation practice" },
-  "extDesc": { "message": "Split a YouTube video into sentences, loop each one, type what you hear and check it word by word." }
+  "extName": {
+    "message": "Listen Loop — YouTube dictation practice"
+  },
+  "extDesc": {
+    "message": "Split a YouTube video into sentences, loop each one, type what you hear and check it word by word."
+  },
+  "actionTitle": {
+    "message": "Open the Listen Loop notebook"
+  }
 }

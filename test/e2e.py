@@ -12,6 +12,7 @@ returns an empty body unless the request carries the player's pot token.
 Real-YouTube behaviour (selectors, the player's own caption request) must still be
 checked by hand in a normal Chrome profile — see README.
 """
+import json
 import os
 import shutil
 import sys
@@ -23,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EXT = os.path.abspath(os.path.join(HERE, '..'))
 OUT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else 'e2e-out')
 os.makedirs(OUT, exist_ok=True)
-for _d in ('profile', 'profile-en'):
+for _d in ('profile', 'profile-en', 'profile-nb'):
     shutil.rmtree(os.path.join(OUT, _d), ignore_errors=True)  # start from empty extension storage
 VID = 'bghlEqTApEQ'
 URL = f'https://www.youtube.com/watch?v={VID}&t=31'
@@ -375,6 +376,138 @@ with sync_playwright() as p:
           f'English labels after loading ({text(page, ".sent-no")} | {text(page, ".list summary")})')
     time.sleep(0.5)
     page.locator(HOST).screenshot(path=os.path.join(OUT, '11-english-browser.png'))
+    ctx.close()
+
+    # ---- mistake notebook: add by hand, review across two videos, grades, backup
+    ctx = launch('profile-nb', 'zh-CN')
+    sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event('serviceworker', timeout=15000)
+    nb_url = f'chrome-extension://{sw.url.split("/")[2]}/notebook.html'
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    page.goto(URL)
+    page.wait_for_selector(HOST, state='attached', timeout=20000)
+    page.locator(f'{HOST} .view-idle [data-act=start]').click()
+    wait_phase(page)
+    star = lambda pg: pg.locator(f'{HOST} .nb-star').inner_text()
+    check(star(page) == '☆' and page.locator(f'{HOST} .nb-open .badge').is_hidden(), 'notebook empty: hollow star, no badge')
+    page.locator(f'{HOST} textarea.input').fill('so we stay in touch and i love hear from him')
+    page.keyboard.press('Enter')
+    time.sleep(0.3)
+    page.locator(f'{HOST} .res-foot [data-act=nb]').click()
+    time.sleep(0.4)
+    check(star(page) == '★' and '已加入错题本' in text(page, '.toast'), 'added from the check result: star filled, toast')
+    check(text(page, '.res-foot [data-act=nb]').startswith('★ 已在错题本'), 'result link now says it is in the notebook')
+    page.keyboard.press('Alt+ArrowRight')
+    time.sleep(0.3)
+    page.keyboard.press('Alt+KeyB')  # add without checking
+    time.sleep(0.4)
+    check(star(page) == '★', 'Alt+B adds the current sentence')
+    page.locator(f'{HOST} .list summary').click()
+    time.sleep(0.2)
+    check(text(page, 'li[data-i="10"] .st').startswith('★') and text(page, 'li[data-i="11"] .st').startswith('★'),
+          'sentence list marks notebook sentences with ★')
+    page.evaluate(f"""() => {{ history.pushState({{}}, '', '/watch?v={GEMINI_VID}');
+                         document.dispatchEvent(new CustomEvent('yt-navigate-finish')); }}""")
+    time.sleep(0.5)
+    page.locator(f'{HOST} .view-idle [data-act=start]').click()
+    wait_phase(page)
+    if not page.locator(f'{HOST} .list').evaluate('d => d.open'):
+        page.locator(f'{HOST} .list summary').click()
+    page.locator(f'{HOST} li[data-i="1"]').click()  # "On today's show, uh we will talk about the tough road trip."
+    time.sleep(0.3)
+    page.keyboard.press('Alt+KeyB')
+    time.sleep(0.4)
+
+    nb = ctx.new_page()
+    nb.goto(nb_url)
+    nb.wait_for_selector('.hero')
+    check('全部 3' in nb.locator('.hero .stats').inner_text() and nb.locator('[data-act=start]').count() == 0
+          and '下一批：明天（3 句）' in nb.locator('.hero').inner_text(), 'notebook page: 3 sentences, first review tomorrow')
+    nb.locator('[data-act=tab][data-tab=all]').click()
+    check(nb.locator('.group').count() == 2 and nb.locator('.item .tx.masked').count() == 3, 'grouped by video, text hidden')
+    nb.locator('.item [data-act=show]').first.click()
+    check(nb.locator('.item .tx:not(.masked)').count() == 1, '显示原文 shows one sentence')
+    check(any('love hear from him' in x for x in nb.locator('.item').all_inner_texts()), 'shows what the learner wrote')
+    nb.screenshot(path=os.path.join(OUT, '12-notebook.png'), full_page=True)
+
+    # it's "tomorrow": everything is due
+    nb.evaluate("""async () => { const r = await chrome.storage.local.get('ll:nb'); const today = LLNotebook.dayIndex(Date.now());
+        for (const it of Object.values(r['ll:nb'].items)) it.due = today; await chrome.storage.local.set(r); }""")
+    time.sleep(0.4)
+    check(nb.locator('[data-act=start]').inner_text() == '开始复习（3 句）', 'all 3 due -> start button')
+    nb.locator('[data-act=start]').click()
+    nb.wait_for_url(f'**v={VID}**', timeout=15000)
+    nb.wait_for_selector(HOST, state='attached', timeout=20000)
+    time.sleep(1.5)
+    check(text(nb, '.hdr-info') == '错题复习' and text(nb, '.sent-no') == '复习 1 / 3', f'review mode on video 1 ({text(nb, ".sent-no")})')
+    check(nb.locator(f'{HOST} .list').is_hidden() and nb.locator(f'{HOST} .adj-toggle').is_hidden() and
+          '来自：' in text(nb, '.rv-src'), 'review hides list / adjust, shows the source video')
+    ts = sample(nb, 2.4)
+    log('review clock %.2f – %.2f' % (min(ts), max(ts)))
+    check(min(ts) >= 29.9 and max(ts) <= 32.6, 'plays the saved range of sentence 1')
+    rbox = nb.locator(f'{HOST} textarea.input')
+    rbox.fill('so we stay in touch and i love hearing from him')
+    nb.keyboard.press('Enter')
+    time.sleep(0.3)
+    check(nb.locator(f'{HOST} .gbtn.good.on').count() == 1 and '3 天后' in text(nb, '.gnext'), 'all correct, no help -> 记住了, back in 3 days')
+    nb.screenshot(path=os.path.join(OUT, '13-review.png'))
+    nb.locator(HOST).screenshot(path=os.path.join(OUT, '13b-review-panel.png'))
+    nb.keyboard.press('Enter')
+    time.sleep(0.5)
+    check(text(nb, '.sent-no') == '复习 2 / 3', 'Enter -> next item in the same video')
+    nb.keyboard.press('Alt+KeyH')
+    rbox.fill('i loved seeing him before the game')
+    nb.keyboard.press('Enter')
+    time.sleep(0.3)
+    check(nb.locator(f'{HOST} .gbtn.fuzzy.on').count() == 1 and '2 天后' not in text(nb, '.gnext'), 'correct with a hint -> 模糊')
+    nb.locator(f'{HOST} .gbtn.good').click()
+    time.sleep(0.3)
+    check(nb.locator(f'{HOST} .gbtn.good.on').count() == 1 and '3 天后' in text(nb, '.gnext'), 'grade can be changed by hand')
+    nb.keyboard.press('Enter')
+    nb.wait_for_url(f'**v={GEMINI_VID}**', timeout=15000)
+    nb.wait_for_selector(HOST, state='attached', timeout=20000)
+    time.sleep(1.5)
+    check(text(nb, '.sent-no') == '复习 3 / 3', f'continues in the next video ({text(nb, ".sent-no")})')
+    nb.locator(f'{HOST} textarea.input').fill('what')
+    nb.keyboard.press('Enter')
+    time.sleep(0.3)
+    check(nb.locator(f'{HOST} .gbtn.again.on').count() == 1 and '明天' in text(nb, '.gnext'), 'mostly wrong -> 没记住, back tomorrow')
+    nb.keyboard.press('Enter')
+    time.sleep(0.4)
+    check(nb.locator(f'{HOST} .panel').get_attribute('data-phase') == 'review-done' and
+          text(nb, '.done-sum') == '记住 2 句 · 模糊 0 句 · 没记住 1 句', f'summary at the end ({text(nb, ".done-sum")})')
+    nb.locator(HOST).screenshot(path=os.path.join(OUT, '14-review-done.png'))
+
+    with ctx.expect_page() as pinfo:
+        nb.locator(f'{HOST} .view-review-done [data-act=open-nb]').click()
+    nb2 = pinfo.value
+    nb2.wait_for_selector('.hero')
+    st = nb2.evaluate("""async () => { const r = await chrome.storage.local.get(['ll:nb', 'll:review']); const today = LLNotebook.dayIndex(Date.now());
+        return { session: r['ll:review'] || null, sched: Object.values(r['ll:nb'].items).map(it => [it.stage, it.due - today]).sort() }; }""")
+    check(st['session'] is None and st['sched'] == [[0, 1], [1, 3], [1, 3]], f'schedules saved, session cleared ({st})')
+    check('今天待复习 0' in nb2.locator('.hero .stats').inner_text(), 'notebook opened from the panel, nothing left today')
+
+    with nb2.expect_download() as dl:
+        nb2.locator('[data-act=export]').click()
+    backup = json.load(open(dl.value.path()))
+    check(backup.get('app') == 'listen-loop' and len(backup['items']) == 3, 'export writes all 3 sentences')
+    extra = dict(backup['items'][0], key='99000', start=99.0, end=101.0)
+    imp = os.path.join(OUT, 'import.json')
+    json.dump({'items': [extra, backup['items'][1], {'bad': 1}]}, open(imp, 'w'))
+    nb2.set_input_files('#import-file', imp)
+    time.sleep(0.6)
+    check('新增 1 句' in nb2.locator('#toast').inner_text() and '全部 4' in nb2.locator('.hero .stats').inner_text(), 'import merges a backup')
+    nb2.locator('[data-act=tab][data-tab=words]').click()
+    check(nb2.locator('.word').count() >= 1, 'missed words listed')
+    nb2.locator('.word', has_text='hearing').click()
+    check(nb2.locator('.filter').count() == 1 and nb2.locator('.item').count() == 1 and
+          'love hear from him' in nb2.locator('.item').inner_text(), 'word filter shows the sentence it was missed in')
+    nb2.locator('[data-act=clear-word]').click()
+    rm = nb2.locator('.item [data-act=remove]').first
+    rm.click()
+    check(rm.inner_text() == '确认移出？' and '全部 4' in nb2.locator('.hero .stats').inner_text(), 'remove asks first')
+    rm.click()
+    time.sleep(0.4)
+    check('全部 3' in nb2.locator('.hero .stats').inner_text(), 'second click removes')
     ctx.close()
 
 log('DONE — failures:', failures if failures else 'none')
