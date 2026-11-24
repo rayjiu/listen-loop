@@ -49,6 +49,7 @@ window.LLPanelCSS = `
 .panel {
   border: 1px solid var(--ll-line); border-radius: 12px; background: var(--ll-bg);
   overflow: hidden; font-size: 14px; line-height: 1.5;
+  container: ll-panel / inline-size;
 }
 .hdr { display: flex; align-items: center; gap: 6px; padding: 10px 12px 10px 20px; }
 .panel:not(.collapsed) .hdr { border-bottom: 1px solid var(--ll-line); }
@@ -63,7 +64,10 @@ window.LLPanelCSS = `
 }
 .brand { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: #e5484d; }
-.hdr-info { flex: 1; text-align: right; font-size: 12px; color: var(--ll-muted); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.hdr-info {
+  flex: 1; min-width: 0; text-align: right; font-size: 12px; color: var(--ll-muted); font-variant-numeric: tabular-nums; margin-right: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .ib {
   border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 15px;
   width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
@@ -83,6 +87,7 @@ window.LLPanelCSS = `
 .rv-bar { display: none; align-items: center; gap: 8px; margin: -4px 0 12px; font-size: 12px; color: var(--ll-muted); }
 .panel.review .rv-bar { display: flex; }
 .rv-src { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rv-bar .link, .resume .link, .resume .btn { white-space: nowrap; flex-shrink: 0; } /* long titles shrink, not the actions */
 .panel.review .adj-toggle, .panel.review .adjust, .panel.review .list,
 .panel.review [data-act="prev"] { display: none !important; }
 .resume {
@@ -110,6 +115,8 @@ window.LLPanelCSS = `
 .lead { margin: 0 0 16px; color: var(--ll-muted); font-size: 13px; line-height: 1.6; }
 .view-loading { color: var(--ll-muted); font-size: 13px; padding: 4px 0; }
 .err { margin: 0 0 14px; color: var(--ll-bad); font-size: 13px; line-height: 1.6; }
+.err-actions { display: flex; align-items: center; gap: 14px; }
+.fb-note { font-size: 11px; color: var(--ll-muted); line-height: 1.5; }
 
 .btn {
   font: inherit; font-size: 13px; font-weight: 500; border: 0; border-radius: 18px;
@@ -130,7 +137,9 @@ window.LLPanelCSS = `
 }
 .link:hover { color: inherit; text-decoration: underline; }
 
-.meta { display: flex; gap: 12px; align-items: baseline; font-size: 12px; color: var(--ll-muted); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+/* Items never break inside; on a narrow column the loop status drops to its own line, right-aligned. */
+.meta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; font-size: 12px; color: var(--ll-muted); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+.meta > * { white-space: nowrap; }
 .sent-no { font-weight: 600; font-size: 14px; color: var(--ll-text); }
 .loop-status { margin-left: auto; color: var(--ll-accent); }
 .adj-toggle.on { color: var(--ll-accent); }
@@ -164,7 +173,15 @@ select option { background: var(--ll-bg); color: var(--ll-text); }
 }
 .input:focus { border-color: var(--ll-accent); box-shadow: 0 0 0 1px var(--ll-accent); }
 .input::placeholder { color: var(--ll-muted); }
-.actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+/* YouTube's right column shrinks to ~350px on 1280px-wide windows: tighten the
+   buttons first; if they still don't fit, ☆ + Check wrap together, right-aligned. */
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+.act-end { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+@container ll-panel (max-width: 380px) {
+  .actions { gap: 6px; }
+  .actions .btn.sm { padding: 6px 10px; }
+  .act-end { gap: 4px; }
+}
 .grow { flex: 1; }
 
 .hint {
@@ -193,7 +210,8 @@ select option { background: var(--ll-bg); color: var(--ll-text); }
 .legend { margin-top: 10px; font-size: 11px; color: var(--ll-muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .legend i { font-style: normal; }
 .legend .extra { font-size: inherit; }
-.res-foot { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+.res-foot { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.res-foot .link { white-space: nowrap; }
 .toast { font-size: 12px; color: var(--ll-near); min-height: 0; }
 .toast:not(:empty) { margin-top: 10px; }
 

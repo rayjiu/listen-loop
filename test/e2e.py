@@ -34,6 +34,14 @@ FIXTURE = open(os.path.join(HERE, 'fixtures', 'asr-steve-kerr.json3'), encoding=
 GEMINI_VID = 'XSKxKJlixs0'
 GEMINI = open(os.path.join(HERE, 'fixtures', 'cues-draymond-gemini.json3'), encoding='utf-8').read()
 HOST = '#listen-loop-host'
+FORM_URL = 'https://kil5372lmm.feishu.cn/share/base/form/shrcnn19XwOWed9x9NWZ0C1Io6i'
+TYPE_FIELD = '类型 / Type'
+DIAG_FIELD = '诊断信息（插件自动填写）/ Diagnostics (filled in automatically)'
+
+
+def form_params(url):
+    from urllib.parse import urlsplit, parse_qsl
+    return dict(parse_qsl(urlsplit(url).query))
 
 failures = []
 timedtext_log = []
@@ -96,6 +104,8 @@ with sync_playwright() as p:
                   '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
         )
         c.route('https://www.youtube.com/**', handle)
+        # the feedback form (Feishu) is never really contacted in tests
+        c.route('https://kil5372lmm.feishu.cn/**', lambda r: r.fulfill(status=200, content_type='text/html', body='<title>form</title>'))
         return c
 
     ctx = launch('profile', 'zh-CN')  # Chinese browser -> Chinese UI
@@ -253,6 +263,17 @@ with sync_playwright() as p:
     time.sleep(0.2)
     check(page.evaluate("() => document.querySelector('#movie_player #listen-loop-mask') !== null"), 'hard-sub mask added to the player')
 
+    # ---- feedback: opens the form with diagnostics pre-filled
+    with ctx.expect_page() as pinfo:
+        page.locator(f'{HOST} [data-act=feedback]').click()
+    fb = form_params(pinfo.value.url)
+    pinfo.value.close()
+    diag = fb.get('prefill_' + DIAG_FIELD, '')
+    log('feedback diagnostics:', diag.replace('\n', ' | '))
+    check(pinfo.value.url.startswith(FORM_URL) and diag.startswith('Listen Loop ') and f'watch?v={VID}' in diag
+          and 'sentence ' in diag and 'via captured-refetch' in diag and ('prefill_' + TYPE_FIELD) not in fb,
+          'settings -> feedback form with version, video, sentence, caption path; type left to the user')
+
     # ---- theme: the panel follows YouTube's <html dark>
     bg = lambda: page.locator(f'{HOST} .panel').evaluate('p => getComputedStyle(p).backgroundColor')
     light_bg = bg()
@@ -327,6 +348,19 @@ with sync_playwright() as p:
     page.locator(f'{HOST} [data-act=start]').first.click()
     wait_phase(page)
     check(text(page, '.hdr-info').startswith('已完成 1 /'), f'progress restored after reload ({text(page, ".hdr-info")})')
+
+    # ---- narrow right column (YouTube gives ~352px on 1280px-wide windows): nothing clipped or broken
+    page.evaluate("() => { document.querySelector('#secondary').style.width = '352px'; }")
+    time.sleep(0.3)
+    lay = page.evaluate(f"""() => {{ const r = document.querySelector('{HOST}').shadowRoot;
+      const box = (s) => r.querySelector(s).getBoundingClientRect();
+      const p = box('.panel'), c = box('[data-act=check]'), h = box('[data-act=hint]'), info = r.querySelector('.hdr-info');
+      const unbroken = [...r.querySelectorAll('.meta > *')].every((e) => e.getBoundingClientRect().height < 24);
+      return {{ w: Math.round(p.width), inside: c.right <= p.right - 8, oneRow: Math.abs(c.top - h.top) < 4, unbroken,
+        info: info.textContent, fits: info.scrollWidth <= info.clientWidth }}; }}""")
+    check(lay['w'] == 352 and lay['inside'] and lay['oneRow'], f'352px column: Check button visible, on the hint row ({lay})')
+    check(lay['unbroken'] and lay['fits'], f'352px column: sentence info unbroken, header fits ("{lay["info"]}")')
+    page.evaluate("() => { document.querySelector('#secondary').style.width = ''; }")
     page.locator('h1').click()
     page.keyboard.press('Alt+ArrowRight')
     page.keyboard.press('Alt+ArrowRight')
@@ -362,6 +396,12 @@ with sync_playwright() as p:
     page.locator(f'{HOST} [data-act=start]').first.click()
     phase = wait_phase(page)
     check(phase == 'error' and '没有字幕' in text(page, '.err'), f'no-captions video -> clear message ({text(page, ".err")})')
+    with ctx.expect_page() as pinfo:
+        page.locator(f'{HOST} .view-error [data-act=feedback-bug]').click()
+    fb = form_params(pinfo.value.url)
+    pinfo.value.close()
+    check(fb.get('prefill_' + TYPE_FIELD) == '问题 / Bug' and 'error no-captions' in fb.get('prefill_' + DIAG_FIELD, ''),
+          'error view -> "反馈这个问题" picks Bug and includes the error code')
     ctx.close()
 
     # ---- an English browser gets the English UI without touching settings
@@ -505,6 +545,11 @@ with sync_playwright() as p:
     rm = nb2.locator('.item [data-act=remove]').first
     rm.click()
     check(rm.inner_text() == '确认移出？' and '全部 4' in nb2.locator('.hero .stats').inner_text(), 'remove asks first')
+    with ctx.expect_page() as pinfo:
+        nb2.locator('[data-act=feedback]').click()
+    fb = form_params(pinfo.value.url)
+    pinfo.value.close()
+    check('page notebook · 4 items' in fb.get('prefill_' + DIAG_FIELD, ''), 'notebook page -> feedback with notebook stats')
     rm.click()
     time.sleep(0.4)
     check('全部 3' in nb2.locator('.hero .stats').inner_text(), 'second click removes')

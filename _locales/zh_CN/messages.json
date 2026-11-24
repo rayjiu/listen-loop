@@ -1,9 +1,9 @@
 {
   "extName": {
-    "message": "Listen Loop — YouTube 精听听写"
+    "message": "Listen Loop — YouTube 英语精听听写"
   },
   "extDesc": {
-    "message": "把 YouTube 视频按句切开，逐句循环播放、听写并逐词核对。"
+    "message": "YouTube 英语精听听写：自动按句切分、单句循环播放，打出听到的内容逐词批改，听错的句子进错题本按间隔复习。"
   },
   "actionTitle": {
     "message": "打开 Listen Loop 错题本"

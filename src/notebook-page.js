@@ -8,6 +8,7 @@
   'use strict';
   const NB = window.LLNotebook;
   const I18N = window.LLI18n;
+  const FB = window.LLFeedback;
 
   let lang = 'zh';
   let items = {};
@@ -131,6 +132,7 @@
         <div class="tools">
           <button class="btn sm" data-act="export"${st.total ? '' : ' disabled'}>${esc(t('pgExport'))}</button>
           <button class="btn sm" data-act="import">${esc(t('pgImport'))}</button>
+          <button class="btn sm" data-act="feedback">${esc(t('pgFeedback'))}</button>
         </div>
       </header>
       <section class="hero">
@@ -196,6 +198,12 @@
       case 'clean-gone': NB.store.update((all) => { for (const k of Object.keys(all)) if (all[k].gone) delete all[k]; }); break;
       case 'export': exportBackup(); break;
       case 'import': fileInput.value = ''; fileInput.click(); break;
+      case 'feedback': {
+        const st = NB.stats(items, Date.now());
+        const lines = FB.baseLines(lang).concat([`page notebook · ${st.total} items · due ${st.due} · mastered ${st.mastered} · unavailable ${st.gone}`]);
+        window.open(FB.formUrl({ lines }), '_blank', 'noopener');
+        break;
+      }
       default: break;
     }
   });

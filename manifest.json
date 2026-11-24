@@ -33,6 +33,7 @@
         "src/panel-style.js",
         "src/i18n.js",
         "src/notebook.js",
+        "src/feedback.js",
         "src/content.js"
       ],
       "run_at": "document_idle"

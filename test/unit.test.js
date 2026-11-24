@@ -301,3 +301,14 @@ test('notebook: backup round trip keeps the more recently reviewed copy', () => 
   assert.equal(NB.mergeImport(items, { nope: 1 }).ok, false);
   assert.deepEqual(NB.missedIndex(items)[0], ['hearing', [a.id, 'bghlEqTApEQ:99000']]);
 });
+
+test('feedback: form link pre-fills type and diagnostics by exact question title', () => {
+  const FB = require('../src/feedback.js');
+  assert.equal(FB.formUrl(), FB.FORM_URL);
+  const url = new URL(FB.formUrl({ type: 'bug', lines: ['Listen Loop 0.1.0', 'page watch?v=abc @ 3.1s'] }));
+  assert.equal(url.searchParams.get('prefill_类型 / Type'), '问题 / Bug');
+  assert.equal(url.searchParams.get('prefill_诊断信息（插件自动填写）/ Diagnostics (filled in automatically)'), 'Listen Loop 0.1.0\npage watch?v=abc @ 3.1s');
+  assert.equal(new URL(FB.formUrl({ type: 'nope' })).search, ''); // unknown type: nothing pre-filled
+  const long = new URL(FB.formUrl({ lines: ['x'.repeat(5000)] }));
+  assert.equal(long.searchParams.get('prefill_' + FB.FIELD.diag).length, 1500);
+});

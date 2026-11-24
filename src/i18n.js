@@ -56,6 +56,9 @@
     resetConfirm: '再点一次确认清除',
     missedCap: '最常听错的词（首次作答统计）',
     missedNone: '还没有记录',
+    fbButton: '反馈问题 / 提建议',
+    fbReport: '反馈这个问题',
+    fbNote: '会打开一个表单，自动带上插件版本、当前视频等诊断信息，提交前可以看到和修改。',
     keys: '<kbd>Tab</kbd> 重播 · <kbd>Enter</kbd> 检查 / 下一句 · <kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd> 上/下一句 · ' +
       '<kbd>Alt</kbd>+<kbd>↑</kbd><kbd>↓</kbd> 调速 · <kbd>Alt</kbd>+<kbd>R</kbd> 重播 · <kbd>Alt</kbd>+<kbd>H</kbd> 提示 · ' +
       '<kbd>Alt</kbd>+<kbd>T</kbd> 译文 · <kbd>Alt</kbd>+<kbd>A</kbd> 原文 · <kbd>Alt</kbd>+<kbd>B</kbd> 错题本',
@@ -101,6 +104,7 @@
 
     perfect: '<b>✓ 全对</b> · 按 Enter 进入下一句',
     scoreLine: '<b>{pct}%</b> · 第 {n} 次 · 改完按 Enter 再检查，不改直接 Enter 下一句',
+    scoreLineReview: '<b>{pct}%</b> · 改完按 Enter 再检查，不改直接 Enter 下一句',
     lgOk: '绿 对',
     lgNear: '橙 差一点',
     lgWrong: '红 错',
@@ -173,6 +177,7 @@
     pgCleanGone: '清理无法播放的 {n} 句',
     pgExport: '导出备份',
     pgImport: '导入备份',
+    pgFeedback: '反馈',
     pgImported: '导入完成：新增 {added} 句，更新 {updated} 句',
     pgImportBad: '这不是 Listen Loop 的错题本备份文件',
     pgFilter: '包含「{w}」的句子',
@@ -213,7 +218,7 @@
     placeholder: 'Type what you hear · Enter to check · Tab to replay',
     hint: 'Hint',
     trans: 'Translate',
-    reveal: 'Show answer',
+    reveal: 'Reveal',
     check: 'Check ⏎',
 
     gap: 'Pause between loops',
@@ -230,6 +235,9 @@
     resetConfirm: 'Click again to confirm',
     missedCap: 'Most-missed words (first attempts)',
     missedNone: 'Nothing yet',
+    fbButton: 'Send feedback',
+    fbReport: 'Report this problem',
+    fbNote: 'Opens a form with diagnostics (extension version, current video…) filled in; you can review and edit them before sending.',
     keys: '<kbd>Tab</kbd> replay · <kbd>Enter</kbd> check / next · <kbd>Alt</kbd>+<kbd>←</kbd><kbd>→</kbd> prev / next · ' +
       '<kbd>Alt</kbd>+<kbd>↑</kbd><kbd>↓</kbd> speed · <kbd>Alt</kbd>+<kbd>R</kbd> replay · <kbd>Alt</kbd>+<kbd>H</kbd> hint · ' +
       '<kbd>Alt</kbd>+<kbd>T</kbd> translate · <kbd>Alt</kbd>+<kbd>A</kbd> answer · <kbd>Alt</kbd>+<kbd>B</kbd> notebook',
@@ -275,6 +283,7 @@
 
     perfect: '<b>✓ All correct</b> · Enter for the next sentence',
     scoreLine: '<b>{pct}%</b> · attempt {n} · fix it and press Enter to recheck, or Enter again to move on',
+    scoreLineReview: '<b>{pct}%</b> · fix it and press Enter to recheck, or Enter again to move on',
     lgOk: 'green correct',
     lgNear: 'orange close',
     lgWrong: 'red wrong',
@@ -347,6 +356,7 @@
     pgCleanGone: 'Remove {n} unavailable',
     pgExport: 'Export backup',
     pgImport: 'Import backup',
+    pgFeedback: 'Feedback',
     pgImported: 'Imported: {added} new, {updated} updated',
     pgImportBad: "That isn't a Listen Loop notebook backup",
     pgFilter: 'Sentences with "{w}"',

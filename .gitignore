@@ -13,3 +13,5 @@ __pycache__/
 *.crx
 *.pem
 node_modules/
+dist/
+store/raw/

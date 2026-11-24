@@ -12,6 +12,7 @@
   const { checkAnswer, hintText } = window.LLCheck;
   const I18N = window.LLI18n;
   const NB = window.LLNotebook;
+  const FB = window.LLFeedback;
 
   const HOOK = 'listen-loop-hook';
   const CS = 'listen-loop-cs';
@@ -539,6 +540,28 @@
     if (changed.length) NB.store.update((items) => { for (const [id, f] of changed) if (items[id]) Object.assign(items[id], f); });
   }
 
+  // ------------------------------------------------------------- feedback
+  /** What the feedback form gets pre-filled with (shown to the learner before sending). */
+  function feedbackLines() {
+    const v = getVideo();
+    const s = S.sentences[S.idx];
+    const L = FB.baseLines(lang);
+    L.push(`page ${S.videoId ? `watch?v=${S.videoId}` : location.pathname} @ ${v ? `${v.currentTime.toFixed(1)}s` : '-'}`);
+    L.push(`mode ${S.mode} · phase ${S.phase}${S.error ? ` · error ${S.error.code}` : ''}`);
+    if (S.info) {
+      const via = (el.panel && el.panel.dataset.via) || '?';
+      L.push(`captions ${S.info.languageCode || '?'}/${S.info.kind || 'manual'} via ${via} · ${S.sentences.length} sentences`);
+    }
+    if (s && S.phase === 'ready') L.push(`sentence ${S.idx + 1} · ${fmt(s.start, true)}–${fmt(s.end, true)} · key ${s.key}`);
+    if (S.transJob && S.transJob.status === 'error') L.push(`translate error ${S.transJob.error}`);
+    const st = NB.stats(nbItems, Date.now());
+    L.push(`notebook ${st.total} · due ${st.due}${session ? ` · review ${session.pos + 1}/${session.queue.length}` : ''}`);
+    return L;
+  }
+  function openFeedback(type) {
+    window.open(FB.formUrl({ type, lines: feedbackLines() }), '_blank', 'noopener');
+  }
+
   function openNotebook() {
     try { chrome.runtime.sendMessage({ type: 'open-notebook' }); } catch (_) { /* extension reloaded */ }
   }
@@ -892,7 +915,10 @@
       <div class="view view-loading"><span class="spinner"></span>${t('loading')}</div>
       <div class="view view-error">
         <p class="err"></p>
-        <button class="btn sm" data-act="start">${t('retry')}</button>
+        <div class="err-actions">
+          <button class="btn sm" data-act="start">${t('retry')}</button>
+          <button class="link" data-act="feedback-bug">${t('fbReport')}</button>
+        </div>
       </div>
       <div class="view view-ready">
         <div class="rv-bar"><span class="rv-src"></span><span class="grow"></span>
@@ -934,9 +960,10 @@
           <button class="btn sm" data-act="hint" title="Alt+H">${t('hint')}</button>
           <button class="btn sm" data-act="trans" title="Alt+T">${t('trans')}</button>
           <button class="btn sm" data-act="reveal" title="Alt+A">${t('reveal')}</button>
-          <span class="grow"></span>
-          <button class="ib nb-star" data-act="nb" title="${t('nbAddTitle')}">☆</button>
-          <button class="btn primary sm" data-act="check">${t('check')}</button>
+          <span class="act-end">
+            <button class="ib nb-star" data-act="nb" title="${t('nbAddTitle')}">☆</button>
+            <button class="btn primary sm" data-act="check">${t('check')}</button>
+          </span>
         </div>
         <div class="toast"></div>
         <div class="hint" hidden></div>
@@ -958,6 +985,8 @@
       <div class="row sub"><span>${t('maskBottom')}</span><input type="range" min="0" max="60" step="1" data-set="maskBottom"></div>
       <div class="row"><button class="btn sm" data-act="yt-cc">${t('ytcc')}</button>
         <button class="btn sm danger" data-act="reset-video">${t('resetVideo')}</button></div>
+      <div class="row"><button class="btn sm" data-act="feedback">${t('fbButton')}</button>
+        <span class="fb-note">${t('fbNote')}</span></div>
       <div class="missed"><div class="cap">${t('missedCap')}</div><div class="missed-list"></div></div>
       <div class="keys">${t('keys')}</div>
     </div>
@@ -998,6 +1027,7 @@
     root.addEventListener('change', onSettingInput);
     root.addEventListener('input', (e) => { if (e.target.type === 'range') onSettingInput(e); });
     el.list.addEventListener('toggle', () => { if (el.list.open) scrollListTo(S.idx); });
+    new ResizeObserver(() => fitHeader()).observe(el.hdrInfo);
   }
 
   /** Switch UI language: rebuild the panel, keeping typed text and open sections. */
@@ -1064,6 +1094,7 @@
   function renderHeader() {
     if (!el.hdrInfo) return;
     let txt = '';
+    let short = '';
     if (S.phase === 'ready' && S.mode === 'review') txt = t('rvHdr');
     else if (S.phase === 'ready') {
       const done = S.sentences.reduce((n, s) => {
@@ -1071,8 +1102,21 @@
         return n + (p && (p.correct || p.flagged) ? 1 : 0);
       }, 0);
       txt = t('done', { d: done, n: S.sentences.length });
+      short = `${done} / ${S.sentences.length}`;
     }
-    el.hdrInfo.textContent = txt;
+    hdrText = { txt, short };
+    fitHeader();
+  }
+
+  // On a narrow column ("Notebook" + badge leave little room) show just "3 / 42",
+  // or nothing in review mode (the review bar below already says so).
+  let hdrText = { txt: '', short: '' };
+  function fitHeader() {
+    const h = el.hdrInfo;
+    if (!h) return;
+    h.textContent = hdrText.txt;
+    h.title = hdrText.txt;
+    if (h.scrollWidth > h.clientWidth) h.textContent = hdrText.short; // '' when there is no short form
   }
 
   function renderPractice() {
@@ -1171,7 +1215,9 @@
     if (r) {
       head = r.perfect
         ? `<div class="score perfect">${t('perfect')}</div>`
-        : `<div class="score">${t('scoreLine', { pct: Math.round(r.score * 100), n: p.attempts })}</div>`;
+        : `<div class="score">${S.mode === 'review' // reviews don't count attempts
+          ? t('scoreLineReview', { pct: Math.round(r.score * 100) })
+          : t('scoreLine', { pct: Math.round(r.score * 100), n: p.attempts })}</div>`;
       body = renderDiff(r) + (r.perfect ? '' : `<div class="legend"><i class="w ok">${t('lgOk')}</i><i class="w near">${t('lgNear')}</i>` +
         `<i class="w wrong">${t('lgWrong')}</i><i class="w missing">${t('lgMissing')}</i><i class="extra">${t('lgExtra')}</i></div>`);
     } else {
@@ -1318,6 +1364,8 @@
       case 'flag': toggleFlag(); break;
       case 'nb': toggleNotebook(); break;
       case 'open-nb': openNotebook(); break;
+      case 'feedback': openFeedback(); break;
+      case 'feedback-bug': openFeedback('bug'); break;
       case 'grade': commitGrade(btn.dataset.g); el.input.focus({ preventScroll: true }); break;
       case 'review-exit': exitReview(); break;
       case 'review-resume': resumeReview(); break;
